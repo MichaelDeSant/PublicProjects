@@ -1,0 +1,258 @@
+---
+title: "Causal Final Project"
+author: "Michael Desantis (250835459), Nicholas Porrone (250918147), Owen Tirona (250914600)"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(haven)
+library(tidyverse)
+library(dplyr)
+options(dplyr.summarise.inform = FALSE)
+options(ggplot.geom_smooth.inform = F)
+```
+
+# Aid Under Fire: Development Projects and Civil Conflict
+
+## Introduction
+
+Aid Under Fire: Development Projects and Civil Conflict (Crost, Felter and Johnston, 2014) 
+
+Many governments across the world have implemented strategies to curb poverty levels. One method in particular is to shift aid towards areas affected by conflict. While the intent to improve the state remains, experts have remained skeptical about how the aid initiatives affect conflict areas. In the early 2000s, the Philippines experienced conflict across the country as militant groups fought for control. At the same time, the government implemented a Community Driven Development (CDD) program which was available for municipalities in the bottom 25% of poverty scores. The authors sought to explore the causal relationship between eligibility and participation in the CDD program with casualty rates.  
+
+Data on poverty levels came from family income expenditure surveys and Census data. Additional data on militant groups and casualties was generated from the Armed Forces of the Philippines conflict reports. 
+
+Estimating the causal effect of the CDD program on the intensity of conflict was done through a regression discontinuity design. The threshold created by the eligibility for the CDD program was used. The running variable was based on the relative poverty rank of a municipality from the province mean. 
+
+\newpage
+
+### Read in Data and Running Variable Creation
+
+```{r warning=FALSE}
+data <- read_dta("AUF_replication_data.dta")
+data <- data[,c(3:5,19:21)]
+
+newData <- data %>% 
+  ## This is grouping by month, each record with the same municipality represents a different months observation
+  group_by(municipality_name) %>% 
+  summarise(
+    totcas = mean(totcas), # Average Casualties per municipality
+    rank,
+    num_muni,
+    kalahimunicipality,
+    province_name
+    ) %>%
+  group_by(province_name)%>%
+  summarise(
+    municipality_name,
+    totcas,
+    rank,
+    num_muni,
+    kalahimunicipality,
+    province_name,
+    AvgPRank = mean(rank) # Average Province Rank
+  ) %>%
+  summarise(
+    province_name,
+    municipality_name,
+    totcas,
+    rank,
+    num_muni,
+    kalahimunicipality,
+    province_name,
+    AvgPRank,
+    # The running variable is difference between a municipalities rank and the avg province rank
+    running = rank - AvgPRank 
+  )
+
+finalData <- unique(newData)
+head(finalData)
+```
+
+## Replication
+
+The figure we have chosen from the article is shown below. Although you see 5 graphs here, we have decided to create one graph which would be the average output for all of the graphs.
+
+![We are choosing to replicate this figure from the article.](/Desktop/Ivey/Semester 3/Casual Inference/Project/Figure6.png)
+
+\newpage
+
+From the original figures, we can see that the running variable is an integer. We had a hard time implementing integers in our running variables as we decided to prioritize accuracy in terms of ranking. This can be seen if you refer to the code in "Read in Data and Running Variable Creation" section above. The comments in the code junk show a more logical explanation. In summary, we our running variables are continuous. 
+
+### Sum the Running Total for an Accurate Replicate
+
+Now to account for running variables with the same values, we will group by running values and find the average total casualties per month. (Output variable)
+
+```{r}
+RunSum <- finalData %>%
+  group_by(running) %>%
+  summarise(
+    totcas = mean(totcas)
+  ) 
+head(RunSum)
+```
+
+### Adjust the range to match the figure
+
+The figures have a range of running totals between -6 and postive 6. Thus we will adjust our data to follow those standards as seen below.
+
+```{r}
+RunSum <- RunSum[RunSum$running>-7 & RunSum$running < 7,]
+```
+
+### Our Replicated Figure
+
+```{r message = FALSE}
+RunSum %>% 
+  ggplot(aes(running,totcas)) +
+  geom_point() +
+  geom_vline(xintercept=0) +
+  geom_smooth(method = 'lm',data = RunSum %>% filter(running<0), aes(x=running,y=totcas),se=FALSE,colour='black') +
+  geom_smooth(method = 'lm',data = RunSum %>% filter(running>0),aes(x=running,y=totcas),se=FALSE,colour='black') +
+
+  ggtitle('RD Plot Between All Divisons') +
+  labs(x = 'Running Variable',y='Outcome') +
+  
+  theme_classic()
+```
+
+### Differences Between Article and Replicated Figures
+
+As mentioned previously, this figure is an average of the original 5 figures. Another difference is the fact that our running variable is continuous while there running variables are discrete. Reasons for of this stem by our inability to account for proper rankings with integers. We also believed that choosing replicate an average of all 5 graphs in the original figure made the paper a little bit easier to understand.
+
+\newpage
+
+## Monte Carlo Simulation
+
+### The Casual Model
+
+The Monte Carlo Simulation will be based on the following model which was taken implicitly from the article:
+
+$$
+Y_{ipt} = \beta_0 + \tau D_{ip} + \beta_1X_{ip} + \beta_2D_{ip}X_{ip} + \alpha_p + \gamma_t + \epsilon_{ipt}
+$$
+Where,
+
+$Y_{ipt}$: The number of conflict casualties suffered by municipality i in province p in month t.
+
+$X_{ip}$: The municipality's relative poverty rank. 
+
+$D_{ip}$: An indication that takes the value 1 if the municipality is eligible for the program and 0 if its not.
+
+$\alpha_p$: Province and time fixed effect.
+
+$\gamma_t$: Province and time fixed effect.
+
+$\tau$: RD estimator
+
+$\epsilon_{ipt}$: The error associated with each causality record.
+
+The weakness 
+
+
+### Determining a Threshold Value
+
+To find an appropriate threshold value, we decided to generate 10000 samples of X and find the value at the 75th quartile, to allow us to use this value in our simulate data function. The reason for this is because the treated municipalities are the top 25% ranked municipalities (poorest 25%).
+
+```{r}
+test <- rnorm(10000,mean(finalData$running),sd(finalData$running))
+test <- sort(test)
+test[7500] # Top 25%
+```
+From this, we realized that 5 was a great threshold value.
+
+### Create Functions for Y0 and Y1
+
+First, we will define $f^0$ and $f^1$ using simple polynomials with hand-picked coefficients.
+
+```{r}
+EY0 <- function(x){
+  abs(x)
+}
+
+EY1 <- function(x){
+  abs(x)/1.92
+  }
+```
+
+### Defining a Simulate Data Function
+
+This function below takes the Casual Model in to account when simulating the data.
+
+```{r}
+simulate_data <- function (N=1000,threshold=5,sigma=0.3){
+
+  # Create a basic tibble with one row per observation
+  data <- tibble(
+    
+    i=1:N,
+    
+    # (this will be our running variable)
+    X = rnorm(N,mean(finalData$running),sd(finalData$running)),
+    
+    D = as.integer(X>threshold),
+      
+    # Generate potential outcomes, where the expected values vary smoothly with X
+    Y0 = rnorm(N,EY0(X),sigma*EY0(X)),
+    Y1 = rnorm(N,EY1(X),sigma*EY1(X)),
+  
+    # Create observed outcome with switching equation
+    Y = D*Y1 + (1-D)*Y0
+    
+  )
+  
+  data
+}
+```
+
+### Defining an Estimator Function for Computing D
+
+```{r}
+estimator <- function(sample_data){
+
+  ols <- lm(Y ~ D,sample_data)
+  
+  point_estimate <- coef(ols)['D']
+  
+  names(point_estimate) <- c('Tau_hat')
+  
+  point_estimate
+  }
+```
+
+### Defining a Function That Generates One MC Estimate
+
+```{r}
+mc_estimate <- function(s){
+
+    # Simulate data
+    sample_data <- simulate_data()
+    
+    # Compute the sample estimate
+    estimate <- estimator(sample_data)
+
+    # Return the result
+    estimate
+}
+
+mc_estimate()
+```
+
+### Producing Many MC Estimates
+
+```{r}
+mc_estimates <- 1:1000 %>%
+  map_df(mc_estimate,.id='sample')
+
+mean(mc_estimates$Tau_hat)
+```
+
+## Conclusion
+
+
+
+
